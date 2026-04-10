@@ -3,6 +3,8 @@ import { useStore } from '../store';
 import type { Invoice } from '../types';
 import { InvoiceForm } from './InvoiceForm';
 import { InvoicePreview } from './InvoicePreview';
+import { PaymentButtons } from './PaymentButtons';
+import { DunningPanel } from './DunningPanel';
 import { Button } from './ui/Button';
 import {
   formatCurrency,
@@ -103,6 +105,22 @@ export function InvoiceList() {
   const [exporting, setExporting] = useState(false);
   const [filter, setFilter] = useState<FilterTab>('all');
   const [reminderCopied, setReminderCopied] = useState(false);
+
+  // Handle Stripe success redirect: ?payment=success&invoice=<id>
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const paymentStatus = params.get('payment');
+    const invoiceId = params.get('invoice');
+    if (paymentStatus === 'success' && invoiceId) {
+      const inv = invoices.find((i) => i.id === invoiceId);
+      if (inv && inv.status !== 'paid') {
+        markPaid(invoiceId);
+      }
+      if (inv) { setSelected(inv); setView('preview'); }
+      // Clean URL
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, [invoices]);
 
   function handleCreate(invoice: Invoice) {
     addInvoice(invoice);
@@ -298,6 +316,18 @@ export function InvoiceList() {
           <div className="bg-green-50 border border-green-200 rounded-xl px-5 py-3 text-green-700 text-sm">
             Bezahlt am <strong>{formatDate(fresh.paidAt)}</strong>
           </div>
+        )}
+
+        {/* Payment buttons */}
+        {fresh.status !== 'paid' && fresh.status !== 'cancelled' && (
+          <div className="bg-white rounded-xl border shadow-sm p-5">
+            <PaymentButtons invoice={fresh} onPaid={() => markPaid(fresh.id)} />
+          </div>
+        )}
+
+        {/* Dunning panel */}
+        {fresh.status !== 'paid' && fresh.status !== 'cancelled' && fresh.status !== 'draft' && (
+          <DunningPanel invoice={fresh} />
         )}
 
         <div className="bg-white rounded-xl shadow-sm border overflow-auto">

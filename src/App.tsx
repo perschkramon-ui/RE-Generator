@@ -7,21 +7,27 @@ import { CustomerList } from "./components/CustomerList"
 import { InvoiceList } from "./components/InvoiceList"
 import { ProductList } from "./components/ProductList"
 import { RecurringList } from "./components/RecurringList"
+import { ProfileSwitcher, ProfileManager } from "./components/ProfileManager"
+import { TeamManager } from "./components/TeamManager"
+import { ApiKeyManager } from "./components/ApiKeyManager"
+import { usePermissions } from "./hooks/usePermission"
 import "./App.css"
 
-type Tab = "invoices" | "customers" | "products" | "recurring" | "settings"
+type Tab = "invoices" | "customers" | "products" | "recurring" | "team" | "settings"
 
 function App() {
   const [tab, setTab] = useState<Tab>("invoices")
   const [autoGenToast, setAutoGenToast] = useState<string | null>(null)
   const { recurringInvoices, generateDueInvoices, loadFromFirestore, isLoaded } = useStore()
-  const { user, loading: authLoading, signOut } = useAuth()
+  const { user, loading: authLoading, signOut, isOwner, ownerUid } = useAuth()
+  const { can } = usePermissions()
 
-  // Load Firestore data when user logs in
+  // Load Firestore data when user logs in (use ownerUid if team member)
   useEffect(() => {
     if (!user) return
-    setStoreUid(user.uid)
-    loadFromFirestore(user.uid).then(() => {
+    const dataUid = ownerUid ?? user.uid
+    setStoreUid(dataUid)
+    loadFromFirestore(dataUid).then(() => {
       const result = generateDueInvoices()
       if (result.generated > 0) {
         setAutoGenToast(
@@ -31,7 +37,7 @@ function App() {
       }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.uid])
+  }, [user?.uid, ownerUid])
 
   if (authLoading) {
     return (
@@ -46,20 +52,25 @@ function App() {
   const today = new Date().toISOString().slice(0, 10)
   const dueBadge = recurringInvoices.filter((r) => r.active && r.nextDate <= today).length
 
-  const TABS: { id: Tab; label: string; badge?: number }[] = [
-    { id: "invoices", label: "Rechnungen" },
-    { id: "customers", label: "Kunden" },
-    { id: "products", label: "Leistungen" },
-    { id: "recurring", label: "Abos", badge: dueBadge },
-    { id: "settings", label: "Einstellungen" },
+  const ALL_TABS: { id: Tab; label: string; badge?: number; permission?: Parameters<typeof can>[0] }[] = [
+    { id: "invoices",  label: "Rechnungen", permission: "invoices:read" },
+    { id: "customers", label: "Kunden",     permission: "customers:read" },
+    { id: "products",  label: "Leistungen", permission: "products:read" },
+    { id: "recurring", label: "Abos",       badge: dueBadge, permission: "recurring:read" },
+    { id: "team",      label: "Team",       permission: "team:read" },
+    { id: "settings",  label: "Einstellungen", permission: "settings:read" },
   ]
+  const TABS = ALL_TABS.filter((t) => !t.permission || can(t.permission))
 
   return (
     <div className="min-h-screen bg-gray-100">
       <header className="bg-white border-b border-gray-200 shadow-sm">
         <div className="max-w-5xl mx-auto px-4 flex items-center justify-between h-14">
-          <span className="font-bold text-gray-900 text-lg tracking-tight">Rechnungsgenerator</span>
-          {!isLoaded && <span className="text-xs text-gray-400 ml-2">Daten werden geladen …</span>}
+          <div className="flex items-center gap-3">
+            <span className="font-bold text-gray-900 text-lg tracking-tight">Rechnungsgenerator</span>
+            {!isLoaded && <span className="text-xs text-gray-400">Lädt …</span>}
+            <ProfileSwitcher />
+          </div>
           <nav className="flex gap-1">
             {TABS.map((t) => (
               <button
@@ -78,13 +89,20 @@ function App() {
               </button>
             ))}
           </nav>
-          <button
-            onClick={() => signOut()}
-            className="text-xs text-gray-400 hover:text-gray-700 ml-2"
-            title={user.email ?? ''}
-          >
-            Abmelden
-          </button>
+          <div className="flex items-center gap-2">
+            {!isOwner && (
+              <span className="text-xs bg-purple-100 text-purple-600 px-2 py-0.5 rounded-full font-medium">
+                Teammitglied
+              </span>
+            )}
+            <button
+              onClick={() => signOut()}
+              className="text-xs text-gray-400 hover:text-gray-700"
+              title={user.email ?? ''}
+            >
+              Abmelden
+            </button>
+          </div>
         </div>
       </header>
 
@@ -93,10 +111,15 @@ function App() {
         {tab === "customers" && <CustomerList />}
         {tab === "products" && <ProductList />}
         {tab === "recurring" && <RecurringList />}
+        {tab === "team" && <TeamManager />}
         {tab === "settings" && (
-          <div>
-            <h2 className="text-lg font-semibold text-gray-800 mb-6">Firmeneinstellungen</h2>
-            <CompanySettings />
+          <div className="space-y-10">
+            <ProfileManager />
+            <ApiKeyManager />
+            <div>
+              <h2 className="text-lg font-semibold text-gray-800 mb-6">Einstellungen — aktives Profil</h2>
+              <CompanySettings />
+            </div>
           </div>
         )}
       </main>

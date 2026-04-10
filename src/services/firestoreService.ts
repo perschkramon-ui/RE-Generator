@@ -16,10 +16,14 @@ import {
 import { db } from '../firebase';
 import type {
   CompanySettings,
+  CompanyProfile,
   Customer,
   Invoice,
   Product,
   RecurringInvoice,
+  TeamMember,
+  TeamRole,
+  ApiKey,
 } from '../types';
 
 // ── Collection path helpers ───────────────────────────────────────────────────
@@ -27,6 +31,31 @@ import type {
 const root = (uid: string) => `users/${uid}`;
 const col = (uid: string, name: string) => collection(db, root(uid), name);
 const settingsDoc = (uid: string) => doc(db, root(uid), 'settings', 'company');
+const activeProfileDoc = (uid: string) => doc(db, root(uid), 'settings', 'activeProfile');
+
+// ── Company Profiles ──────────────────────────────────────────────────────────
+
+export async function loadProfiles(uid: string): Promise<CompanyProfile[]> {
+  const snap = await getDocs(col(uid, 'profiles'));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as CompanyProfile));
+}
+
+export async function saveProfile(uid: string, profile: CompanyProfile) {
+  await setDoc(doc(db, root(uid), 'profiles', profile.id), profile);
+}
+
+export async function deleteProfile(uid: string, id: string) {
+  await deleteDoc(doc(db, root(uid), 'profiles', id));
+}
+
+export async function loadActiveProfileId(uid: string): Promise<string | null> {
+  const snap = await getDoc(activeProfileDoc(uid));
+  return snap.exists() ? (snap.data() as { id: string }).id : null;
+}
+
+export async function saveActiveProfileId(uid: string, profileId: string) {
+  await setDoc(activeProfileDoc(uid), { id: profileId });
+}
 
 // ── Company Settings ─────────────────────────────────────────────────────────
 
@@ -86,6 +115,32 @@ export const saveProduct = (uid: string, p: Product) => saveDoc(uid, 'products',
 export const deleteProduct = (uid: string, id: string) => removeDoc(uid, 'products', id);
 export const subscribeProducts = (uid: string, cb: (p: Product[]) => void) =>
   subscribeCollection<Product>(uid, 'products', cb);
+
+// ── API Keys ──────────────────────────────────────────────────────────────────
+export const loadApiKeys = (uid: string) => loadAll<ApiKey>(uid, 'apiKeys');
+export const saveApiKey = (uid: string, key: ApiKey) => saveDoc(uid, 'apiKeys', key);
+export const deleteApiKey = (uid: string, id: string) => removeDoc(uid, 'apiKeys', id);
+
+// ── Team Members ──────────────────────────────────────────────────────────────
+export const loadTeamMembers = (uid: string) => loadAll<TeamMember>(uid, 'team');
+export const saveTeamMember = (uid: string, m: TeamMember) => saveDoc(uid, 'team', m);
+export const deleteTeamMember = (uid: string, id: string) => removeDoc(uid, 'team', id);
+export const subscribeTeam = (uid: string, cb: (m: TeamMember[]) => void) =>
+  subscribeCollection<TeamMember>(uid, 'team', cb);
+
+/** Lookup which owner account a user belongs to (stored under invitee's uid) */
+export async function findOwnerUidForUser(userUid: string): Promise<{ ownerUid: string; role: TeamRole } | null> {
+  const { getDocs: gd, collectionGroup } = await import('firebase/firestore');
+  try {
+    const snap = await gd(collectionGroup(db, 'team'));
+    const found = snap.docs.find((d) => d.data().uid === userUid && d.data().status === 'active');
+    if (!found) return null;
+    const data = found.data() as TeamMember;
+    return { ownerUid: data.ownerUid, role: data.role };
+  } catch {
+    return null;
+  }
+}
 
 // ── Recurring Invoices ────────────────────────────────────────────────────────
 export const loadRecurring = (uid: string) => loadAll<RecurringInvoice>(uid, 'recurring');

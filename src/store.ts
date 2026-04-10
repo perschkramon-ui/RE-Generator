@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { CompanySettings, Customer, Invoice, InvoiceStatus, Product, RecurringInvoice } from './types';
+import type { CompanySettings, CompanyProfile, Customer, Invoice, InvoiceStatus, Product, RecurringInvoice, TeamMember, TeamRole, ApiKey } from './types';
 import { buildInvoiceNumber, advanceByInterval, addDays, todayIso } from './utils/invoiceUtils';
 import * as fs from './services/firestoreService';
 
@@ -8,7 +8,13 @@ let _uid = '';
 export function setStoreUid(uid: string) { _uid = uid; }
 
 interface AppState {
-  company: CompanySettings;
+  company: CompanySettings;       // active profile (derived)
+  profiles: CompanyProfile[];     // all profiles
+  activeProfileId: string | null;
+  addProfile: (profile: CompanyProfile) => Promise<void>;
+  updateProfile: (profile: CompanyProfile) => Promise<void>;
+  deleteProfile: (id: string) => Promise<void>;
+  switchProfile: (id: string) => Promise<void>;
   customers: Customer[];
   invoices: Invoice[];
   products: Product[];
@@ -22,6 +28,8 @@ interface AppState {
   updateInvoiceStatus: (id: string, status: InvoiceStatus) => void;
   markPaid: (id: string) => void;
   markReminderSent: (id: string) => void;
+  setStripeCheckoutUrl: (id: string, url: string, sessionId: string) => void;
+  recordDunning: (id: string, level: number, fee: number, method: 'clipboard' | 'email') => void;
   getNextInvoiceNumber: () => string;
   incrementInvoiceNumber: () => void;
   addProduct: (product: Product) => void;
@@ -33,6 +41,16 @@ interface AppState {
   deleteRecurring: (id: string) => void;
   toggleRecurring: (id: string) => void;
   generateDueInvoices: () => { generated: number; invoiceNumbers: string[] };
+  // Team
+  teamMembers: TeamMember[];
+  addTeamMember: (member: TeamMember) => Promise<void>;
+  updateTeamMemberRole: (uid: string, role: TeamRole) => Promise<void>;
+  removeTeamMember: (uid: string) => Promise<void>;
+  // API Keys
+  apiKeys: ApiKey[];
+  addApiKey: (key: ApiKey) => void;
+  revokeApiKeyLocal: (id: string) => void;
+  removeApiKey: (id: string) => Promise<void>;
   // Firestore sync
   loadFromFirestore: (uid: string) => Promise<void>;
   isLoaded: boolean;
@@ -65,10 +83,23 @@ const DEFAULT_COMPANY: CompanySettings = {
   aiApiKey: '',
   aiModel: 'gpt-4o-mini',
   brevoApiKey: '',
+  paypalMeUsername: '',
+  stripeEnabled: false,
+  dunningAutoSend: true,
+  dunningLevels: [
+    { level: 1, label: 'Zahlungserinnerung', triggerAfterDays: 3,  fee: 0,   interestRatePercent: 0 },
+    { level: 2, label: '1. Mahnung',         triggerAfterDays: 14, fee: 5,   interestRatePercent: 9 },
+    { level: 3, label: '2. Mahnung',         triggerAfterDays: 28, fee: 10,  interestRatePercent: 9 },
+    { level: 4, label: 'Letzte Mahnung',     triggerAfterDays: 45, fee: 25,  interestRatePercent: 9 },
+  ],
 };
 
 export const useStore = create<AppState>()((set, get) => ({
   company: DEFAULT_COMPANY,
+  profiles: [],
+  activeProfileId: null,
+  teamMembers: [],
+  apiKeys: [],
   customers: [],
   invoices: [],
   products: [],
@@ -78,15 +109,46 @@ export const useStore = create<AppState>()((set, get) => ({
   // ── Firestore bootstrap ────────────────────────────────────────────────────
   loadFromFirestore: async (uid: string) => {
     setStoreUid(uid);
-    const [company, customers, invoices, products, recurringInvoices] = await Promise.all([
-      fs.loadCompany(uid),
-      fs.loadCustomers(uid),
-      fs.loadInvoices(uid),
-      fs.loadProducts(uid),
-      fs.loadRecurring(uid),
-    ]);
+    const [legacyCompany, customers, invoices, products, recurringInvoices, profiles, activeProfileId, teamMembers, apiKeys] =
+      await Promise.all([
+        fs.loadCompany(uid),
+        fs.loadCustomers(uid),
+        fs.loadInvoices(uid),
+        fs.loadProducts(uid),
+        fs.loadRecurring(uid),
+        fs.loadProfiles(uid),
+        fs.loadActiveProfileId(uid),
+        fs.loadTeamMembers(uid),
+        fs.loadApiKeys(uid),
+      ]);
+
+    let resolvedProfiles = profiles;
+    let resolvedActiveId = activeProfileId;
+
+    // Migrate legacy single-company settings to profile system on first load
+    if (resolvedProfiles.length === 0 && legacyCompany && legacyCompany.name) {
+      const defaultProfile: CompanyProfile = {
+        ...legacyCompany,
+        id: crypto.randomUUID(),
+        profileName: legacyCompany.name || 'Hauptprofil',
+        createdAt: new Date().toISOString(),
+      };
+      await fs.saveProfile(uid, defaultProfile);
+      await fs.saveActiveProfileId(uid, defaultProfile.id);
+      resolvedProfiles = [defaultProfile];
+      resolvedActiveId = defaultProfile.id;
+    }
+
+    const activeProfile = resolvedProfiles.find((p) => p.id === resolvedActiveId)
+      ?? resolvedProfiles[0]
+      ?? null;
+
     set({
-      company: company ?? DEFAULT_COMPANY,
+      company: activeProfile ?? legacyCompany ?? DEFAULT_COMPANY,
+      profiles: resolvedProfiles,
+      activeProfileId: resolvedActiveId ?? resolvedProfiles[0]?.id ?? null,
+      teamMembers,
+      apiKeys,
       customers,
       invoices,
       products,
@@ -95,10 +157,96 @@ export const useStore = create<AppState>()((set, get) => ({
     });
   },
 
-  // ── Company ────────────────────────────────────────────────────────────────
+  // ── Profile management ────────────────────────────────────────────────────
+  addProfile: async (profile) => {
+    set((s) => ({ profiles: [...s.profiles, profile] }));
+    if (_uid) {
+      await fs.saveProfile(_uid, profile);
+      if (get().profiles.length === 1) {
+        await fs.saveActiveProfileId(_uid, profile.id);
+        set({ activeProfileId: profile.id, company: profile });
+      }
+    }
+  },
+
+  updateProfile: async (profile) => {
+    set((s) => ({
+      profiles: s.profiles.map((p) => (p.id === profile.id ? profile : p)),
+      company: s.activeProfileId === profile.id ? profile : s.company,
+    }));
+    if (_uid) await fs.saveProfile(_uid, profile);
+  },
+
+  deleteProfile: async (id) => {
+    const remaining = get().profiles.filter((p) => p.id !== id);
+    const newActive = remaining[0] ?? null;
+    set((s) => ({
+      profiles: remaining,
+      activeProfileId: s.activeProfileId === id ? (newActive?.id ?? null) : s.activeProfileId,
+      company: s.activeProfileId === id ? (newActive ?? DEFAULT_COMPANY) : s.company,
+    }));
+    if (_uid) {
+      await fs.deleteProfile(_uid, id);
+      if (newActive) await fs.saveActiveProfileId(_uid, newActive.id);
+    }
+  },
+
+  switchProfile: async (id) => {
+    const profile = get().profiles.find((p) => p.id === id);
+    if (!profile) return;
+    set({ activeProfileId: id, company: profile });
+    if (_uid) await fs.saveActiveProfileId(_uid, id);
+  },
+
+  // ── API Keys ─────────────────────────────────────────────────────────────
+  addApiKey: (key) => {
+    set((s) => ({ apiKeys: [...s.apiKeys, key] }));
+    if (_uid) fs.saveApiKey(_uid, key);
+  },
+  revokeApiKeyLocal: (id) => {
+    set((s) => ({ apiKeys: s.apiKeys.map((k) => k.id === id ? { ...k, active: false } : k) }));
+    const key = get().apiKeys.find((k) => k.id === id);
+    if (_uid && key) fs.saveApiKey(_uid, { ...key, active: false });
+  },
+  removeApiKey: async (id) => {
+    set((s) => ({ apiKeys: s.apiKeys.filter((k) => k.id !== id) }));
+    if (_uid) await fs.deleteApiKey(_uid, id);
+  },
+
+  // ── Team ─────────────────────────────────────────────────────────────────
+  addTeamMember: async (member) => {
+    set((s) => ({ teamMembers: [...s.teamMembers, member] }));
+    if (_uid) await fs.saveTeamMember(_uid, member);
+  },
+  updateTeamMemberRole: async (uid, role) => {
+    set((s) => ({
+      teamMembers: s.teamMembers.map((m) => (m.uid === uid || m.email === uid) ? { ...m, role } : m),
+    }));
+    const member = get().teamMembers.find((m) => m.uid === uid || m.email === uid);
+    if (_uid && member) await fs.saveTeamMember(_uid, { ...member, role });
+  },
+  removeTeamMember: async (uid) => {
+    const member = get().teamMembers.find((m) => m.uid === uid || m.email === uid);
+    set((s) => ({ teamMembers: s.teamMembers.filter((m) => m.uid !== uid && m.email !== uid) }));
+    if (_uid && member) await fs.deleteTeamMember(_uid, member.uid || member.email);
+  },
+
+  // ── Company (saves to active profile) ────────────────────────────────────
   setCompany: (settings) => {
+    const { activeProfileId, profiles } = get();
     set({ company: settings });
-    if (_uid) fs.saveCompany(_uid, settings);
+    if (_uid) {
+      fs.saveCompany(_uid, settings);
+      // Also update the active profile if one exists
+      if (activeProfileId) {
+        const profile = profiles.find((p) => p.id === activeProfileId);
+        if (profile) {
+          const updated: CompanyProfile = { ...settings, id: profile.id, profileName: profile.profileName, createdAt: profile.createdAt };
+          set((s) => ({ profiles: s.profiles.map((p) => p.id === updated.id ? updated : p) }));
+          fs.saveProfile(_uid, updated);
+        }
+      }
+    }
   },
 
   // ── Customers ─────────────────────────────────────────────────────────────
@@ -154,6 +302,35 @@ export const useStore = create<AppState>()((set, get) => ({
     }));
     const inv = get().invoices.find((i) => i.id === id);
     if (_uid && inv) fs.saveInvoice(_uid, { ...inv, reminderSentAt, status: 'sent' });
+  },
+
+  setStripeCheckoutUrl: (id, url, sessionId) => {
+    set((s) => ({
+      invoices: s.invoices.map((inv) =>
+        inv.id === id ? { ...inv, stripeCheckoutUrl: url, stripeSessionId: sessionId } : inv
+      ),
+    }));
+    const inv = get().invoices.find((i) => i.id === id);
+    if (_uid && inv) fs.saveInvoice(_uid, { ...inv, stripeCheckoutUrl: url, stripeSessionId: sessionId });
+  },
+
+  recordDunning: (id, level, fee, method) => {
+    const sentAt = new Date().toISOString().slice(0, 10);
+    const entry = { level, sentAt, fee, method };
+    set((s) => ({
+      invoices: s.invoices.map((inv) => {
+        if (inv.id !== id) return inv;
+        return {
+          ...inv,
+          dunningLevel: level,
+          reminderSentAt: sentAt,
+          status: inv.status === 'draft' ? 'sent' : inv.status,
+          dunningHistory: [...(inv.dunningHistory ?? []), entry],
+        };
+      }),
+    }));
+    const inv = get().invoices.find((i) => i.id === id);
+    if (_uid && inv) fs.saveInvoice(_uid, inv);
   },
 
   getNextInvoiceNumber: () => {

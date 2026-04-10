@@ -1,4 +1,4 @@
-import type { Invoice, InvoiceTotals, LineItem, RecurringInterval } from '../types';
+import type { Invoice, InvoiceTotals, LineItem, RecurringInterval, DunningLevel } from '../types';
 
 export function buildInvoiceNumber(
   prefix: string,
@@ -127,6 +127,84 @@ export function recurringIntervalLabel(interval: RecurringInterval): string {
     yearly: 'Jährlich',
   };
   return map[interval];
+}
+
+/** Returns the next due dunning level for an invoice, or null if none */
+export function getNextDunningLevel(
+  invoice: Invoice,
+  levels: DunningLevel[]
+): DunningLevel | null {
+  if (invoice.status === 'paid' || invoice.status === 'cancelled') return null;
+  const days = daysOverdue(invoice.dueDate);
+  if (days < 0) return null;
+  const currentLevel = invoice.dunningLevel ?? 0;
+  // Find the next level that is due but not yet sent
+  return (
+    levels
+      .filter((l) => l.level > currentLevel && l.triggerAfterDays <= days)
+      .sort((a, b) => a.level - b.level)[0] ?? null
+  );
+}
+
+/** Calculates Verzugszinsen (§288 BGB) for an overdue invoice */
+export function calcInterest(grossAmount: number, interestRatePercent: number, daysOverdueNum: number): number {
+  if (daysOverdueNum <= 0 || interestRatePercent <= 0) return 0;
+  return (grossAmount * (interestRatePercent / 100) * daysOverdueNum) / 365;
+}
+
+/** Builds a dunning letter text for a specific level */
+export function buildDunningText(
+  invoice: Invoice,
+  level: DunningLevel,
+  grossAmount: number,
+  company: { name: string; email: string; iban?: string; bic?: string; bankName?: string }
+): string {
+  const days = daysOverdue(invoice.dueDate);
+  const interest = calcInterest(grossAmount, level.interestRatePercent, days);
+  const totalDue = grossAmount + level.fee + interest;
+  const fmt = (n: number) =>
+    new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(n);
+
+  const interestNote =
+    level.interestRatePercent > 0
+      ? `\n  Verzugszinsen (${level.interestRatePercent} % p.a., ${days} Tage): ${fmt(interest)}`
+      : '';
+  const feeNote = level.fee > 0 ? `\n  Mahngebühr:                                  ${fmt(level.fee)}` : '';
+  const totalNote =
+    level.fee > 0 || interest > 0
+      ? `\n  Gesamtbetrag inkl. Gebühren:                 ${fmt(totalDue)}`
+      : '';
+
+  const newDueDate = new Date();
+  newDueDate.setDate(newDueDate.getDate() + 7);
+  const newDueDateStr = newDueDate.toLocaleDateString('de-DE');
+
+  return `Betreff: ${level.label} – Rechnung ${invoice.invoiceNumber}
+
+Sehr geehrte Damen und Herren,
+
+trotz unserer vorherigen Erinnerung ist folgende Rechnung noch offen:
+
+  Rechnungsnummer:   ${invoice.invoiceNumber}
+  Rechnungsdatum:    ${formatDate(invoice.date)}
+  Fälligkeitsdatum:  ${formatDate(invoice.dueDate)}
+  Offener Betrag:    ${fmt(grossAmount)}${feeNote}${interestNote}${totalNote}
+
+Wir bitten Sie, den ausstehenden Betrag bis zum ${newDueDateStr} zu überweisen.
+
+${company.bankName ? `Bank: ${company.bankName}` : ''}
+${company.iban ? `IBAN: ${company.iban}` : ''}
+${company.bic ? `BIC:  ${company.bic}` : ''}
+
+Sollte Ihre Zahlung bereits unterwegs sein, betrachten Sie dieses Schreiben als gegenstandslos.${
+    level.level >= 4
+      ? '\n\nBei ausbleibender Zahlung sehen wir uns gezwungen, rechtliche Schritte einzuleiten.'
+      : ''
+  }
+
+Mit freundlichen Grüßen
+${company.name}
+${company.email}`;
 }
 
 /** Builds a payment reminder text ready to paste into an email */

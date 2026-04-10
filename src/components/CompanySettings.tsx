@@ -35,6 +35,16 @@ const schema = z.object({
   aiApiKey: z.string().optional(),
   aiModel: z.string().optional(),
   brevoApiKey: z.string().optional(),
+  paypalMeUsername: z.string().optional(),
+  stripeEnabled: z.boolean(),
+  dunningAutoSend: z.boolean(),
+  dunningLevels: z.array(z.object({
+    level: z.number(),
+    label: z.string(),
+    triggerAfterDays: z.number(),
+    fee: z.number(),
+    interestRatePercent: z.number(),
+  })),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -54,6 +64,15 @@ export function CompanySettings() {
       ...company,
       brandColor: company.brandColor ?? '#1d4ed8',
       accentColor: company.accentColor ?? '#1e40af',
+      stripeEnabled: company.stripeEnabled ?? false,
+      paypalMeUsername: company.paypalMeUsername ?? '',
+      dunningAutoSend: company.dunningAutoSend ?? true,
+      dunningLevels: company.dunningLevels ?? [
+        { level: 1, label: 'Zahlungserinnerung', triggerAfterDays: 3,  fee: 0,  interestRatePercent: 0 },
+        { level: 2, label: '1. Mahnung',         triggerAfterDays: 14, fee: 5,  interestRatePercent: 9 },
+        { level: 3, label: '2. Mahnung',         triggerAfterDays: 28, fee: 10, interestRatePercent: 9 },
+        { level: 4, label: 'Letzte Mahnung',     triggerAfterDays: 45, fee: 25, interestRatePercent: 9 },
+      ],
       numberFormat: company.numberFormat ?? '{PREFIX}-{YEAR}-{NUM}',
       numberPadding: company.numberPadding ?? 4,
     } as FormData,
@@ -364,6 +383,80 @@ export function CompanySettings() {
           <p className="text-xs text-gray-400">
             Brevo Console → SMTP &amp; API → API-Schl&uuml;ssel
           </p>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold text-gray-800 mb-4">Mahnsystem</h2>
+        <p className="text-xs text-gray-400 mb-4">
+          Mahnstufen und Gebühren konfigurieren. Verzugszinsen gem. §288 BGB (aktuell 9 % p.a. über Basiszinssatz).
+        </p>
+        <div className="space-y-3 mb-4">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="grid grid-cols-[1fr_80px_80px_80px] gap-2 items-end bg-gray-50 rounded-lg p-3 border border-gray-200">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-gray-500">Bezeichnung</label>
+                <input
+                  className="border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  defaultValue={['Zahlungserinnerung', '1. Mahnung', '2. Mahnung', 'Letzte Mahnung'][i]}
+                  {...register(`dunningLevels.${i}.label` as never)}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-gray-500">Ab Tag</label>
+                <input
+                  type="number" min={0}
+                  className="border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  {...register(`dunningLevels.${i}.triggerAfterDays` as never, { valueAsNumber: true })}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-gray-500">Gebühr €</label>
+                <input
+                  type="number" min={0} step="0.01"
+                  className="border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  {...register(`dunningLevels.${i}.fee` as never, { valueAsNumber: true })}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-gray-500">Zinsen %</label>
+                <input
+                  type="number" min={0} step="0.1"
+                  className="border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  {...register(`dunningLevels.${i}.interestRatePercent` as never, { valueAsNumber: true })}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" className="w-4 h-4 rounded accent-blue-600" {...register('dunningAutoSend')} />
+          <span className="text-sm text-gray-700">Mahnbrief automatisch in Zwischenablage kopieren</span>
+        </label>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold text-gray-800 mb-4">Online-Zahlungen</h2>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="col-span-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" className="w-4 h-4 rounded accent-blue-600" {...register('stripeEnabled')} />
+              <span className="text-sm font-medium text-gray-700">
+                Stripe aktivieren (Karte, SOFORT, Klarna, SEPA)
+              </span>
+            </label>
+            <p className="text-xs text-gray-400 mt-1">
+              Stripe Secret Key serverseitig setzen: <code className="bg-gray-100 px-1 rounded">firebase functions:secrets:set STRIPE_SECRET_KEY</code>
+            </p>
+          </div>
+          <div className="col-span-2">
+            <Input
+              label="PayPal.me Benutzername"
+              placeholder="z. B. maxmustermann"
+              {...register('paypalMeUsername')}
+            />
+            <p className="text-xs text-gray-400 mt-1">Erzeugt Links: paypal.me/benutzername/betragEUR</p>
+          </div>
         </div>
       </section>
 

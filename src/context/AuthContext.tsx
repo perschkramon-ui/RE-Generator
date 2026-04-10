@@ -9,10 +9,15 @@ import {
   type User,
 } from 'firebase/auth';
 import { auth } from '../firebase';
+import { findOwnerUidForUser } from '../services/firestoreService';
+import type { TeamRole } from '../types';
 
 interface AuthCtx {
   user: User | null;
   loading: boolean;
+  teamRole: TeamRole | null;  // null = owner (full access)
+  ownerUid: string | null;    // null = user is the owner
+  isOwner: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
@@ -23,6 +28,9 @@ interface AuthCtx {
 const AuthContext = createContext<AuthCtx>({
   user: null,
   loading: true,
+  teamRole: null,
+  ownerUid: null,
+  isOwner: true,
   signIn: async () => {},
   signUp: async () => {},
   signInWithGoogle: async () => {},
@@ -34,10 +42,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [teamRole, setTeamRole] = useState<TeamRole | null>(null);
+  const [ownerUid, setOwnerUid] = useState<string | null>(null);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
+      if (u) {
+        // Check if this user is a team member of someone else's account
+        const teamInfo = await findOwnerUidForUser(u.uid).catch(() => null);
+        if (teamInfo) {
+          setOwnerUid(teamInfo.ownerUid);
+          setTeamRole(teamInfo.role);
+        } else {
+          setOwnerUid(null);
+          setTeamRole(null);
+        }
+      } else {
+        setOwnerUid(null);
+        setTeamRole(null);
+      }
       setLoading(false);
     });
     return unsub;
@@ -94,8 +118,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await firebaseSignOut(auth);
   }
 
+  const isOwner = ownerUid === null;
+
   return (
-    <AuthContext.Provider value={{ user, loading, signIn, signUp, signInWithGoogle, signOut, error }}>
+    <AuthContext.Provider value={{ user, loading, teamRole, ownerUid, isOwner, signIn, signUp, signInWithGoogle, signOut, error }}>
       {children}
     </AuthContext.Provider>
   );

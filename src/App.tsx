@@ -10,10 +10,13 @@ import { RecurringList } from "./components/RecurringList"
 import { ProfileSwitcher, ProfileManager } from "./components/ProfileManager"
 import { TeamManager } from "./components/TeamManager"
 import { ApiKeyManager } from "./components/ApiKeyManager"
+import { PricingPage } from "./components/PricingPage"
+import { InstallPrompt } from "./components/InstallPrompt"
 import { usePermissions } from "./hooks/usePermission"
+import { useSubscription } from "./hooks/useSubscription"
 import "./App.css"
 
-type Tab = "invoices" | "customers" | "products" | "recurring" | "team" | "settings"
+type Tab = "invoices" | "customers" | "products" | "recurring" | "team" | "subscription" | "settings"
 
 function App() {
   const [tab, setTab] = useState<Tab>("invoices")
@@ -21,6 +24,20 @@ function App() {
   const { recurringInvoices, generateDueInvoices, loadFromFirestore, isLoaded } = useStore()
   const { user, loading: authLoading, signOut, isOwner, ownerUid } = useAuth()
   const { can } = usePermissions()
+  const { plan, isFree, invoicesRemaining } = useSubscription()
+
+  // Handle subscription success redirect
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('subscription') === 'success') {
+      setTab('subscription')
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+    // Listen for upgrade events from UpgradePrompt
+    const handler = () => setTab('subscription')
+    window.addEventListener('open-subscription', handler)
+    return () => window.removeEventListener('open-subscription', handler)
+  }, [])
 
   // Load Firestore data when user logs in (use ownerUid if team member)
   useEffect(() => {
@@ -53,12 +70,13 @@ function App() {
   const dueBadge = recurringInvoices.filter((r) => r.active && r.nextDate <= today).length
 
   const ALL_TABS: { id: Tab; label: string; badge?: number; permission?: Parameters<typeof can>[0] }[] = [
-    { id: "invoices",  label: "Rechnungen", permission: "invoices:read" },
-    { id: "customers", label: "Kunden",     permission: "customers:read" },
-    { id: "products",  label: "Leistungen", permission: "products:read" },
-    { id: "recurring", label: "Abos",       badge: dueBadge, permission: "recurring:read" },
-    { id: "team",      label: "Team",       permission: "team:read" },
-    { id: "settings",  label: "Einstellungen", permission: "settings:read" },
+    { id: "invoices",     label: "Rechnungen",     permission: "invoices:read" },
+    { id: "customers",    label: "Kunden",          permission: "customers:read" },
+    { id: "products",     label: "Leistungen",      permission: "products:read" },
+    { id: "recurring",    label: "Abos",            badge: dueBadge, permission: "recurring:read" },
+    { id: "team",         label: "Team",            permission: "team:read" },
+    { id: "subscription", label: plan.name === 'Free' ? "🔒 Upgrade" : "Abo" },
+    { id: "settings",     label: "Einstellungen",   permission: "settings:read" },
   ]
   const TABS = ALL_TABS.filter((t) => !t.permission || can(t.permission))
 
@@ -70,6 +88,14 @@ function App() {
             <span className="font-bold text-gray-900 text-lg tracking-tight">Rechnungsgenerator</span>
             {!isLoaded && <span className="text-xs text-gray-400">Lädt …</span>}
             <ProfileSwitcher />
+            {isFree && invoicesRemaining <= 1 && (
+              <button
+                onClick={() => setTab("subscription")}
+                className="text-xs bg-amber-100 text-amber-700 border border-amber-300 px-2.5 py-1 rounded-full hover:bg-amber-200 transition-colors"
+              >
+                {invoicesRemaining === 0 ? '⚠ Limit erreicht' : `⚠ Noch ${invoicesRemaining} Rechnung`} · Upgraden
+              </button>
+            )}
           </div>
           <nav className="flex gap-1">
             {TABS.map((t) => (
@@ -112,6 +138,7 @@ function App() {
         {tab === "products" && <ProductList />}
         {tab === "recurring" && <RecurringList />}
         {tab === "team" && <TeamManager />}
+        {tab === "subscription" && <PricingPage />}
         {tab === "settings" && (
           <div className="space-y-10">
             <ProfileManager />
@@ -127,6 +154,8 @@ function App() {
       <footer className="text-center text-xs text-gray-400 py-6">
         Pflichtangaben gem. §14 UStG &middot; DE / AT / CH
       </footer>
+
+      <InstallPrompt />
 
       {/* Auto-generation toast */}
       {autoGenToast && (

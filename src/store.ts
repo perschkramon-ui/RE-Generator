@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { CompanySettings, CompanyProfile, Customer, Invoice, InvoiceStatus, Product, RecurringInvoice, TeamMember, TeamRole, ApiKey } from './types';
+import type { CompanySettings, CompanyProfile, Customer, Invoice, InvoiceStatus, Product, RecurringInvoice, TeamMember, TeamRole, ApiKey, Subscription } from './types';
 import { buildInvoiceNumber, advanceByInterval, addDays, todayIso } from './utils/invoiceUtils';
 import * as fs from './services/firestoreService';
 
@@ -46,6 +46,10 @@ interface AppState {
   addTeamMember: (member: TeamMember) => Promise<void>;
   updateTeamMemberRole: (uid: string, role: TeamRole) => Promise<void>;
   removeTeamMember: (uid: string) => Promise<void>;
+  // Subscription
+  subscription: Subscription;
+  setSubscription: (sub: Subscription) => void;
+  incrementInvoiceCount: () => void;
   // API Keys
   apiKeys: ApiKey[];
   addApiKey: (key: ApiKey) => void;
@@ -99,6 +103,7 @@ export const useStore = create<AppState>()((set, get) => ({
   profiles: [],
   activeProfileId: null,
   teamMembers: [],
+  subscription: { planId: 'free', status: 'free' },
   apiKeys: [],
   customers: [],
   invoices: [],
@@ -109,7 +114,7 @@ export const useStore = create<AppState>()((set, get) => ({
   // ── Firestore bootstrap ────────────────────────────────────────────────────
   loadFromFirestore: async (uid: string) => {
     setStoreUid(uid);
-    const [legacyCompany, customers, invoices, products, recurringInvoices, profiles, activeProfileId, teamMembers, apiKeys] =
+    const [legacyCompany, customers, invoices, products, recurringInvoices, profiles, activeProfileId, teamMembers, apiKeys, subscription] =
       await Promise.all([
         fs.loadCompany(uid),
         fs.loadCustomers(uid),
@@ -120,6 +125,7 @@ export const useStore = create<AppState>()((set, get) => ({
         fs.loadActiveProfileId(uid),
         fs.loadTeamMembers(uid),
         fs.loadApiKeys(uid),
+        fs.loadSubscription(uid),
       ]);
 
     let resolvedProfiles = profiles;
@@ -148,6 +154,7 @@ export const useStore = create<AppState>()((set, get) => ({
       profiles: resolvedProfiles,
       activeProfileId: resolvedActiveId ?? resolvedProfiles[0]?.id ?? null,
       teamMembers,
+      subscription: subscription ?? { planId: 'free', status: 'free' },
       apiKeys,
       customers,
       invoices,
@@ -196,6 +203,24 @@ export const useStore = create<AppState>()((set, get) => ({
     if (!profile) return;
     set({ activeProfileId: id, company: profile });
     if (_uid) await fs.saveActiveProfileId(_uid, id);
+  },
+
+  // ── Subscription ─────────────────────────────────────────────────────────
+  setSubscription: (sub) => {
+    set({ subscription: sub });
+    if (_uid) fs.saveSubscription(_uid, sub);
+  },
+  incrementInvoiceCount: () => {
+    const monthKey = new Date().toISOString().slice(0, 7);
+    const { subscription } = get();
+    const reset = subscription.invoicesMonthKey !== monthKey;
+    const updated: Subscription = {
+      ...subscription,
+      invoicesThisMonth: reset ? 1 : (subscription.invoicesThisMonth ?? 0) + 1,
+      invoicesMonthKey: monthKey,
+    };
+    set({ subscription: updated });
+    if (_uid) fs.saveSubscription(_uid, updated);
   },
 
   // ── API Keys ─────────────────────────────────────────────────────────────

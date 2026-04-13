@@ -24,6 +24,7 @@ import type {
   TeamMember,
   TeamRole,
   ApiKey,
+  Subscription,
 } from '../types';
 
 // ── Collection path helpers ───────────────────────────────────────────────────
@@ -115,6 +116,18 @@ export const saveProduct = (uid: string, p: Product) => saveDoc(uid, 'products',
 export const deleteProduct = (uid: string, id: string) => removeDoc(uid, 'products', id);
 export const subscribeProducts = (uid: string, cb: (p: Product[]) => void) =>
   subscribeCollection<Product>(uid, 'products', cb);
+
+// ── Subscription ─────────────────────────────────────────────────────────────
+const subscriptionDoc = (uid: string) => doc(db, root(uid), 'settings', 'subscription');
+
+export async function loadSubscription(uid: string): Promise<Subscription | null> {
+  const snap = await getDoc(subscriptionDoc(uid));
+  return snap.exists() ? (snap.data() as Subscription) : null;
+}
+
+export async function saveSubscription(uid: string, sub: Subscription) {
+  await setDoc(subscriptionDoc(uid), sub);
+}
 
 // ── API Keys ──────────────────────────────────────────────────────────────────
 export const loadApiKeys = (uid: string) => loadAll<ApiKey>(uid, 'apiKeys');

@@ -1,3 +1,63 @@
+// ── Subscription / Plans ─────────────────────────────────────────────────────
+
+export type PlanId = 'free' | 'pro' | 'business';
+
+export interface Plan {
+  id: PlanId;
+  name: string;
+  price: number;          // EUR/month
+  stripePriceId: string;  // set after creating in Stripe Dashboard
+  features: string[];
+  limits: {
+    invoicesPerMonth: number;   // -1 = unlimited
+    customers: number;          // -1 = unlimited
+    profiles: number;
+    teamMembers: number;
+    aiEnabled: boolean;
+    recurringEnabled: boolean;
+    apiEnabled: boolean;
+    exportEnabled: boolean;
+  };
+}
+
+export const PLANS: Record<PlanId, Plan> = {
+  free: {
+    id: 'free',
+    name: 'Free',
+    price: 0,
+    stripePriceId: '',
+    features: ['3 Rechnungen/Monat', '10 Kunden', 'PDF-Export', '1 Firmenprofil'],
+    limits: { invoicesPerMonth: 3, customers: 10, profiles: 1, teamMembers: 0, aiEnabled: false, recurringEnabled: false, apiEnabled: false, exportEnabled: true },
+  },
+  pro: {
+    id: 'pro',
+    name: 'Pro',
+    price: 9.90,
+    stripePriceId: 'price_REPLACE_WITH_STRIPE_PRICE_ID_PRO',
+    features: ['Unbegrenzte Rechnungen', 'Unbegrenzte Kunden', 'KI-Assistent', 'Wiederkehrende Rechnungen', 'Mahnsystem', 'DATEV-Export', '3 Firmenprofile'],
+    limits: { invoicesPerMonth: -1, customers: -1, profiles: 3, teamMembers: 2, aiEnabled: true, recurringEnabled: true, apiEnabled: false, exportEnabled: true },
+  },
+  business: {
+    id: 'business',
+    name: 'Business',
+    price: 24.90,
+    stripePriceId: 'price_REPLACE_WITH_STRIPE_PRICE_ID_BUSINESS',
+    features: ['Alles aus Pro', 'Unbegrenzte Firmenprofile', 'Team-Zugänge (5 Nutzer)', 'REST API-Zugriff', 'Stripe-Zahlungslinks', 'Prioritäts-Support'],
+    limits: { invoicesPerMonth: -1, customers: -1, profiles: -1, teamMembers: 5, aiEnabled: true, recurringEnabled: true, apiEnabled: true, exportEnabled: true },
+  },
+};
+
+export interface Subscription {
+  planId: PlanId;
+  stripeCustomerId?: string;
+  stripeSubscriptionId?: string;
+  status: 'active' | 'trialing' | 'past_due' | 'cancelled' | 'free';
+  currentPeriodEnd?: string;   // ISO date
+  cancelAtPeriodEnd?: boolean;
+  invoicesThisMonth?: number;  // counter reset monthly
+  invoicesMonthKey?: string;   // YYYY-MM for reset detection
+}
+
 // ── API Keys ─────────────────────────────────────────────────────────────────
 
 export type ApiKeyScope = 'invoices:read' | 'invoices:write' | 'customers:read' | 'customers:write' | 'products:read';

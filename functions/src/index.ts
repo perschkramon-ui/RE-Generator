@@ -784,6 +784,161 @@ export const api = onRequest(
   })
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Callable: createSubscriptionCheckout
+// Creates a Stripe Checkout Session for a subscription plan.
+// Set Stripe Price IDs in PLANS config and replace the placeholders.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface SubscriptionCheckoutRequest {
+  uid: string;
+  email: string;
+  priceId: string;
+  successUrl: string;
+  cancelUrl: string;
+}
+
+export const createSubscriptionCheckout = onCall<SubscriptionCheckoutRequest>(
+  { region: 'europe-west1', secrets: [STRIPE_SECRET] },
+  async (req) => {
+    if (!req.auth) throw new HttpsError('unauthenticated', 'Login erforderlich.');
+    const { uid, email, priceId, successUrl, cancelUrl } = req.data;
+    const stripe = new Stripe(STRIPE_SECRET.value());
+
+    // Retrieve or create Stripe customer
+    const subSnap = await db.doc(`users/${uid}/settings/subscription`).get();
+    let customerId: string | undefined = subSnap.exists
+      ? (subSnap.data() as { stripeCustomerId?: string }).stripeCustomerId
+      : undefined;
+
+    if (!customerId) {
+      const customer = await stripe.customers.create({ email, metadata: { uid } });
+      customerId = customer.id;
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      customer: customerId,
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      allow_promotion_codes: true,
+      subscription_data: { metadata: { uid } },
+    });
+
+    return { url: session.url };
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Callable: createCustomerPortalSession
+// Opens the Stripe Customer Portal (cancel, upgrade, invoices, payment method)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const createCustomerPortalSession = onCall<{ uid: string; returnUrl: string }>(
+  { region: 'europe-west1', secrets: [STRIPE_SECRET] },
+  async (req) => {
+    if (!req.auth) throw new HttpsError('unauthenticated', 'Login erforderlich.');
+    const { uid, returnUrl } = req.data;
+    const stripe = new Stripe(STRIPE_SECRET.value());
+
+    const subSnap = await db.doc(`users/${uid}/settings/subscription`).get();
+    const customerId = subSnap.exists
+      ? (subSnap.data() as { stripeCustomerId?: string }).stripeCustomerId
+      : undefined;
+
+    if (!customerId) throw new HttpsError('not-found', 'Kein Stripe-Konto gefunden.');
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: returnUrl,
+    });
+
+    return { url: session.url };
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP: stripeSubscriptionWebhook
+// Handles: checkout.session.completed, customer.subscription.updated/deleted
+// Set in Stripe Dashboard → Webhooks (separate from invoice webhook)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PRICE_TO_PLAN: Record<string, string> = {
+  // Fill these in after creating prices in Stripe Dashboard:
+  // 'price_xxxPRO': 'pro',
+  // 'price_xxxBUSINESS': 'business',
+};
+
+export const stripeSubscriptionWebhook = onRequest(
+  { region: 'europe-west1', secrets: [STRIPE_SECRET, STRIPE_WEBHOOK_SECRET] },
+  async (req, res) => {
+    const sig = req.headers['stripe-signature'] as string;
+    const stripe = new Stripe(STRIPE_SECRET.value());
+
+    let event: ReturnType<typeof stripe.webhooks.constructEvent>;
+    try {
+      event = stripe.webhooks.constructEvent(req.rawBody, sig, STRIPE_WEBHOOK_SECRET.value());
+    } catch (err) {
+      res.status(400).send(`Webhook Error: ${(err as Error).message}`);
+      return;
+    }
+
+    async function updateSubscription(uid: string, data: Record<string, unknown>) {
+      await db.doc(`users/${uid}/settings/subscription`).set(data, { merge: true });
+    }
+
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object as { customer?: string; subscription?: string; metadata?: Record<string, string>; mode?: string };
+      if (session.mode !== 'subscription') { res.json({ received: true }); return; }
+      const uid = session.metadata?.uid;
+      if (!uid) { res.json({ received: true }); return; }
+      await updateSubscription(uid, {
+        stripeCustomerId: session.customer,
+        stripeSubscriptionId: session.subscription,
+        status: 'active',
+        planId: 'pro', // will be corrected by subscription.updated event
+      });
+    }
+
+    if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.created') {
+      const sub = event.data.object as unknown as {
+        id: string; customer: string; status: string;
+        current_period_end: number; cancel_at_period_end: boolean;
+        items: { data: Array<{ price: { id: string } }> };
+        metadata: Record<string, string>;
+      };
+      const uid = sub.metadata?.uid;
+      if (!uid) { res.json({ received: true }); return; }
+      const priceId = sub.items.data[0]?.price?.id;
+      const planId = PRICE_TO_PLAN[priceId] ?? 'pro';
+      await updateSubscription(uid, {
+        stripeCustomerId: sub.customer,
+        stripeSubscriptionId: sub.id,
+        status: sub.status,
+        planId,
+        currentPeriodEnd: new Date(sub.current_period_end * 1000).toISOString().slice(0, 10),
+        cancelAtPeriodEnd: sub.cancel_at_period_end,
+      });
+    }
+
+    if (event.type === 'customer.subscription.deleted') {
+      const sub = event.data.object as { metadata: Record<string, string>; customer: string };
+      const uid = sub.metadata?.uid;
+      if (uid) {
+        await updateSubscription(uid, {
+          planId: 'free',
+          status: 'cancelled',
+          stripeCustomerId: sub.customer,
+          cancelAtPeriodEnd: false,
+        });
+      }
+    }
+
+    res.json({ received: true });
+  }
+);
+
 // ── Callable: createApiKey — generates a key, stores hash, returns plain key once ──
 
 interface CreateApiKeyRequest {

@@ -35,6 +35,7 @@ interface AppState {
   addProduct: (product: Product) => void;
   updateProduct: (product: Product) => void;
   deleteProduct: (id: string) => void;
+  adjustStock: (id: string, delta: number) => void; // +delta = Zugang, -delta = Abgang
   recurringInvoices: RecurringInvoice[];
   addRecurring: (r: RecurringInvoice) => void;
   updateRecurring: (r: RecurringInvoice) => void;
@@ -385,6 +386,14 @@ export const useStore = create<AppState>()((set, get) => ({
   deleteProduct: (id) => {
     set((s) => ({ products: s.products.filter((p) => p.id !== id) }));
     if (_uid) fs.deleteProduct(_uid, id);
+  },
+  adjustStock: (id, delta) => {
+    const product = get().products.find((p) => p.id === id);
+    if (!product || !product.trackStock) return;
+    const newStock = Math.max(0, (product.stock ?? 0) + delta);
+    const updated = { ...product, stock: newStock };
+    set((s) => ({ products: s.products.map((p) => (p.id === id ? updated : p)) }));
+    if (_uid) fs.saveProduct(_uid, updated);
   },
 
   // ── Recurring ─────────────────────────────────────────────────────────────

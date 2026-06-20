@@ -145,10 +145,15 @@ export interface Product {
   id: string;
   name: string;           // Kurzname / Artikel-Nr.
   description: string;    // Leistungsbeschreibung auf der Rechnung
-  unitPrice: number;
+  unitPrice: number;      // Verkaufspreis netto
+  purchasePrice?: number; // Einkaufspreis netto (intern, nicht auf Rechnung)
   unit: string;
   vatRate: VatRate;
   category?: string;      // optional: Dienstleistung, Software, Material …
+  articleNumber?: string; // Interne Artikelnummer / EAN / Hersteller-Nr.
+  trackStock?: boolean;   // Lagerbestand verfolgen?
+  stock?: number;         // Aktueller Lagerbestand
+  minStock?: number;      // Mindestbestand (Nachbestellgrenze)
 }
 
 export interface LineItem {

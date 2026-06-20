@@ -12,6 +12,7 @@ import { TeamManager } from "./components/TeamManager"
 import { ApiKeyManager } from "./components/ApiKeyManager"
 import { PricingPage } from "./components/PricingPage"
 import { InstallPrompt } from "./components/InstallPrompt"
+import { ReceiptScanner } from "./components/ReceiptScanner"
 import { usePermissions } from "./hooks/usePermission"
 import { useSubscription } from "./hooks/useSubscription"
 import "./App.css"
@@ -21,6 +22,7 @@ type Tab = "invoices" | "customers" | "products" | "recurring" | "team" | "subsc
 function App() {
   const [tab, setTab] = useState<Tab>("invoices")
   const [autoGenToast, setAutoGenToast] = useState<string | null>(null)
+  const [showScanner, setShowScanner] = useState(false)
   const { recurringInvoices, generateDueInvoices, loadFromFirestore, isLoaded } = useStore()
   const { user, loading: authLoading, signOut, isOwner, ownerUid } = useAuth()
   const { can } = usePermissions()
@@ -36,7 +38,13 @@ function App() {
     // Listen for upgrade events from UpgradePrompt
     const handler = () => setTab('subscription')
     window.addEventListener('open-subscription', handler)
-    return () => window.removeEventListener('open-subscription', handler)
+    // Listen for quick-invoice navigation
+    const navHandler = () => setTab('invoices')
+    window.addEventListener('navigate-to-invoices', navHandler)
+    return () => {
+      window.removeEventListener('open-subscription', handler)
+      window.removeEventListener('navigate-to-invoices', navHandler)
+    }
   }, [])
 
   // Load Firestore data when user logs in (use ownerUid if team member)
@@ -156,6 +164,24 @@ function App() {
       </footer>
 
       <InstallPrompt />
+
+      {/* Receipt Scanner Modal */}
+      {showScanner && <ReceiptScanner onClose={() => setShowScanner(false)} />}
+
+      {/* Floating scan button */}
+      <button
+        onClick={() => setShowScanner(true)}
+        className="fixed bottom-6 right-6 z-40 flex items-center gap-2 px-4 py-3 bg-gray-900 hover:bg-gray-700 text-white text-sm font-semibold rounded-2xl shadow-xl transition-all hover:scale-105 active:scale-95"
+        title="Beleg/Foto scannen"
+      >
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+            d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+            d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+        Beleg scannen
+      </button>
 
       {/* Auto-generation toast */}
       {autoGenToast && (

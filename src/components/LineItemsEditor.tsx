@@ -6,7 +6,7 @@ import { Button } from './ui/Button';
 import { AIDescriptionButton } from './AIDescriptionButton';
 
 const VAT_OPTIONS: VatRate[] = [0, 7, 19];
-const UNIT_OPTIONS = ['Stk.', 'Std.', 'Tage', 'Monat', 'pauschal', 'km', 'l', 'kg'];
+const UNIT_OPTIONS = ['Stk.', 'm', 'Rolle', 'Pkg.', 'Sack', 'Eimer', 'Std.', 'Tage', 'Monat', 'pauschal', 'km', 'l', 'kg'];
 
 interface Props {
   items: LineItem[];
@@ -25,18 +25,36 @@ function newItem(defaultVat: VatRate = 19): LineItem {
   };
 }
 
+/** Stock indicator badge for a product in the search dropdown */
+function StockIndicator({ stock, minStock, unit, trackStock }: { stock?: number; minStock?: number; unit: string; trackStock?: boolean }) {
+  if (!trackStock) return null;
+  const s = stock ?? 0;
+  const m = minStock ?? 0;
+  if (s === 0) return <span className="text-[10px] font-bold text-red-600 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded-full">🚨 Leer</span>;
+  if (m > 0 && s <= m) return <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">⚠ {s} {unit}</span>;
+  return <span className="text-[10px] font-bold text-green-700 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded-full">✓ {s} {unit}</span>;
+}
+
 /** Inline product search dropdown for a single row */
-function ProductSearch({ itemId, onSelect }: { itemId: string; onSelect: (id: string, field: keyof LineItem, value: string | number) => void }) {
-  const { products } = useStore();
+function ProductSearch({ itemId, quantity, onSelect }: {
+  itemId: string;
+  quantity: number;
+  onSelect: (id: string, field: keyof LineItem, value: string | number) => void;
+}) {
+  const { products, adjustStock } = useStore();
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
 
   const matches = useMemo(() => {
-    if (!q) return products.slice(0, 8);
+    if (!q) return products.slice(0, 10);
     const lq = q.toLowerCase();
     return products.filter(
-      (p) => p.name.toLowerCase().includes(lq) || p.description.toLowerCase().includes(lq) || (p.category ?? '').toLowerCase().includes(lq)
-    ).slice(0, 8);
+      (p) =>
+        p.name.toLowerCase().includes(lq) ||
+        p.description.toLowerCase().includes(lq) ||
+        (p.category ?? '').toLowerCase().includes(lq) ||
+        (p.articleNumber ?? '').toLowerCase().includes(lq)
+    ).slice(0, 10);
   }, [q, products]);
 
   if (products.length === 0) return null;
@@ -48,6 +66,12 @@ function ProductSearch({ itemId, onSelect }: { itemId: string; onSelect: (id: st
     onSelect(itemId, 'unitPrice', p.unitPrice);
     onSelect(itemId, 'unit', p.unit);
     onSelect(itemId, 'vatRate', p.vatRate);
+
+    // Auto-deduct from stock if tracking enabled
+    if (p.trackStock && quantity > 0) {
+      adjustStock(p.id, -quantity);
+    }
+
     setQ('');
     setOpen(false);
   }
@@ -58,7 +82,7 @@ function ProductSearch({ itemId, onSelect }: { itemId: string; onSelect: (id: st
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="text-xs text-blue-600 hover:underline flex items-center gap-1"
-        title="Aus Leistungskatalog wählen"
+        title="Aus Artikelkatalog wählen"
       >
         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
@@ -66,35 +90,60 @@ function ProductSearch({ itemId, onSelect }: { itemId: string; onSelect: (id: st
         Aus Katalog
       </button>
       {open && (
-        <div className="absolute z-30 left-0 top-6 w-72 bg-white border border-gray-200 rounded-lg shadow-xl">
+        <div className="absolute z-30 left-0 top-6 w-80 bg-white border border-gray-200 rounded-lg shadow-xl">
           <div className="p-2 border-b border-gray-100">
             <input
               autoFocus
               type="text"
-              placeholder="Leistung suchen …"
+              placeholder="Artikel suchen …"
               value={q}
               onChange={(e) => setQ(e.target.value)}
               onBlur={() => setTimeout(() => setOpen(false), 150)}
               className="w-full border border-gray-200 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
-          <div className="max-h-48 overflow-y-auto">
+          <div className="max-h-56 overflow-y-auto">
             {matches.length === 0 ? (
               <p className="text-xs text-gray-400 p-3">Keine Treffer.</p>
-            ) : matches.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onMouseDown={() => applyProduct(p.id)}
-                className="w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-gray-50 last:border-0"
-              >
-                <p className="text-xs font-semibold text-gray-800">{p.name}</p>
-                <p className="text-xs text-gray-400 truncate">{p.description}</p>
-                <p className="text-xs text-blue-600 mt-0.5">
-                  {formatCurrency(p.unitPrice)} / {p.unit} &middot; {p.vatRate} % MwSt.
-                </p>
-              </button>
-            ))}
+            ) : matches.map((p) => {
+              const stockEmpty = p.trackStock && (p.stock ?? 0) === 0;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onMouseDown={() => applyProduct(p.id)}
+                  className={`w-full text-left px-3 py-2.5 hover:bg-blue-50 border-b border-gray-50 last:border-0 ${stockEmpty ? 'opacity-60' : ''}`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-gray-800 truncate">{p.name}</p>
+                      {p.articleNumber && (
+                        <p className="text-[10px] text-gray-400 font-mono">{p.articleNumber}</p>
+                      )}
+                      <p className="text-xs text-gray-400 truncate">{p.description}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-xs font-bold text-blue-600">{formatCurrency(p.unitPrice)}</p>
+                      <p className="text-[10px] text-gray-400">/ {p.unit}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <StockIndicator
+                      stock={p.stock}
+                      minStock={p.minStock}
+                      unit={p.unit}
+                      trackStock={p.trackStock}
+                    />
+                    {p.trackStock && quantity > 0 && (p.stock ?? 0) >= quantity && (
+                      <span className="text-[10px] text-gray-400">→ Bestand: {(p.stock ?? 0) - quantity} nach Buchung</span>
+                    )}
+                    {p.trackStock && quantity > 0 && (p.stock ?? 0) < quantity && (p.stock ?? 0) > 0 && (
+                      <span className="text-[10px] text-amber-600 font-medium">⚠ Nicht genug Bestand</span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -134,7 +183,7 @@ export function LineItemsEditor({ items, smallBusiness, onChange }: Props) {
           <div key={item.id} className="bg-gray-50 border rounded-lg p-3 space-y-2">
             {/* Catalog picker row + AI */}
             <div className="flex items-center justify-between gap-3">
-              <ProductSearch itemId={item.id} onSelect={update} />
+              <ProductSearch itemId={item.id} quantity={item.quantity} onSelect={update} />
               <AIDescriptionButton
                 currentText={item.description}
                 onGenerated={(text) => update(item.id, 'description', text)}
